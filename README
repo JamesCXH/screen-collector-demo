@@ -1,0 +1,30 @@
+screen_action_recorder.py captures your macOS screen with ffmpeg and writes a time‑stamped JSON file of “critical actions” you perform while recording.
+
+Critical action + how they're captured
+- left_click: plain left‑button press and release
+- right_click: right‑button click
+- ctrl_left_click: hold Ctrl while left‑clicking
+- left_drag: left‑button press, move, release (coords logged)
+- command_combo: any key pressed while ⌘ is held (e.g. ⌘‑C)
+- typing: printable characters + SPECIAL chars (newline, delete, backspace) grouped into a phrase; a phrase closes after 5s of keyboard silence (TYPING_GAP) OR if (start of) critical action is heard
+    - uses .isprintable()
+
+It's VERY
+
+Action entries contain: kind, human‑readable description, start time, end time (seconds since recording began).
+
+How detection works
+Mouse and keyboard events are captured with pynput. Clicks/combos are logged immediately; drags and typing phrases are closed when the button is released or the typing gap elapses.
+
+CLI flags
+-f, --fps N video frame‑rate (default 30)
+--debug save a full‑screen PNG at the start and end of every action in recordings/<N>/screenshots/
+
+Output folder per session
+recordings/<N>/recording.mp4 final video
+recordings/<N>/recording.json action log
+screenshots/… only when --debug is used
+
+Stop recording with Esc.
+
+hello this is a test my names is james chen!!!
