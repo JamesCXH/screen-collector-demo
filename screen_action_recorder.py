@@ -9,7 +9,6 @@ import threading
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Tuple
 
 from pynput import keyboard, mouse
 
@@ -153,11 +152,11 @@ class ActionTracker:
         self._shift_down = False
         self._option_down = False
 
-        # active “modifier‑hold” block: (frozenset(mods), t_start, ss_idx, used)
+        # active “modifier‑hold” block: (mods, t_start, ss_idx, used)
         self._active_mod_block: tuple[frozenset[str], float, int, bool] | None = None
 
-        # drag tracking: btn → (x, y, t_press, ss_idx) ------------------------
-        self._drag_start: dict[str, tuple[int, int, float, int]] = {}
+        # click tracking: btn → (x, y, t_press, ss_idx, mods) -----------------
+        self._click_start: dict[str, tuple[int, int, float, int, frozenset[str]]] = {}
 
         # misc ----------------------------------------------------------------
         self.debug = debug
@@ -275,48 +274,32 @@ class ActionTracker:
         now = time.time()
 
         # BUTTON PRESS --------------------------------------------------------
-        if pressed:
-            # Detect what kind of click this might become …
-            if button == mouse.Button.left and self._ctrl_down:
-                kind = "ctrl_left_click"
-            elif button == mouse.Button.left:
-                kind = None  # could turn into a drag
-            elif button == mouse.Button.right:
-                kind = "right_click"
-            else:
-                return
-
-            # Allocate an action index now & snapshot the screen --------------
+        if pressed and button in (mouse.Button.left, mouse.Button.right):
             idx = self._next_idx()
             rel_t = now - self.origin
             self._capture(idx, "start", rel_t)
 
-            # Track potential drag (only plain left‑button press) -------------
-            if button == mouse.Button.left and kind is None:
-                # save idx so we can finish the action on release
-                self._drag_start["left"] = (x, y, now, idx)
-                return
-
-            # Immediate click logging (right‑ or ctrl‑click) ------------------
-            self._finalize_typing(now)
-            self.actions.append(
-                Action(kind, f"{kind} @({x},{y})", rel_t, rel_t)
-            )
-            self._capture(idx, "end", rel_t)
+            mods = frozenset(self._current_modifiers())
+            # store info so we can finish the action on release
+            self._click_start[button.name] = (x, y, now, idx, mods)
             return
 
         # BUTTON RELEASE ------------------------------------------------------
-        if button == mouse.Button.left and "left" in self._drag_start:
-            sx, sy, t0, idx = self._drag_start.pop("left")
-            moved = (sx, sy) != (x, y)
-            kind = "left_drag" if moved else "left_click"
+        if (not pressed) and (button.name in self._click_start):
+            sx, sy, t0, idx, mods = self._click_start.pop(button.name)
 
-            self._finalize_typing(now)
             rel_start = t0 - self.origin
             rel_end = now - self.origin
-            desc = (
-                f"{kind} ({sx},{sy}) → ({x},{y})" if moved else f"{kind} @({x},{y})"
+
+            kind = f"{button.name}_click"  # "left_click" | "right_click"
+            mod_prefix = (
+                "+".join(self._sorted_mods(mods)) + " "
+                if mods
+                else ""
             )
+            desc = f"{mod_prefix}{kind} ({sx},{sy}) → ({x},{y})"
+
+            self._finalize_typing(now)
             self.actions.append(Action(kind, desc, rel_start, rel_end))
             self._capture(idx, "end", rel_end)
 
