@@ -7,9 +7,9 @@ Critical actions (→ JSON "kind")
 left_click/right_click – mouse button press→release. Press and release coordinates are logged so drags are implicit, though the path of the drag isn't recorded as a design choice (too much noise but may be meaningful). Any held modifiers (ctrl, command, option, shift) are prefixed in the description.
 key_combo – non‑modifier key pressed while {command, ctrl or option} is down (e.g. command+S, ctrl+option+K). Note that while shift is a modifier, due to its use in typing, shift itself does not trigger a key combo (triggers typing instead when non-modifier keys are pressed). Further note that shift + other modifier does trigger a key_combo.
 typing – sequence of printable characters plus \n, <BACKSPACE>, <DELETE>, \t; phrase closes after **5s** of silence (tunable). Note that just pressing tab/enter counts as typing whitespace.
-modifier_hold – span during which one or more modifiers are held AND at least one normal key is pressed (logged as "mods held"). Used as held vs just modifier+press behave differently.
+modifier_hold – span during which one or more modifiers are held AND at least one normal key is pressed (logged as "mods held"). Used as held vs just modifier+press behave differently. Note that left/right click aren't classed as a "normal key" for this and won't trigger mod holding.
 
-Every entry: `{kind, description, start, end}` – times are seconds since recording began. These are recorded on the application level and NOT the HID level.
+Every entry: `{kind, description, start, end}` – the times are then rounded to the nearest 1/‐fps so they line up exactly with the MP4 frames.
 We anchor using the presentation timestamp of ffmpeg to ensure entirety of action have the correct timestamps.
 
 Detection internals
