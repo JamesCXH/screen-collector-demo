@@ -6,14 +6,18 @@ log of critical user actions:
 
 * left_click, right_click, **ctrl_left_click**
 * left_drag   (press–hold–move–release)
-* command+…   key combos (⌘‑C, ⌘‑V, etc.)
-* typing      (collapsed into phrases separated by > TYPING_GAP seconds)
+* key_combo   (independent tracking of ALL modifier combos, e.g. ⌘‑C,
+  ^⌘‑Space, ⇧⌘‑5, ⌥‑Tab, ^‑C, etc.)
+* typing      (collapsed into phrases separated by > TYPING_GAP seconds)
+* modifier_hold (continuous blocks that cover *exactly* how long each
+  modifier or modifier‑combo is held)
 
 Enable `--debug` to
-  • snapshot full‑screen PNGs at the *start* **and** *end* of every logged action, **and**
+  • snapshot full‑screen PNGs at the *start* **and** *end* of every logged
+    action, **and**
   • embed a bold, red, top‑right timer (HH:MM:SS.xx) on the video.
 
-Tested with **ffmpeg 4.2.2** on macOS.
+Tested with **ffmpeg 4.2.2** on macOS.
 """
 from __future__ import annotations
 
@@ -72,7 +76,7 @@ def ffmpeg_record_cmd(
         "-framerate",
         str(fps),
         "-i",
-        "1:none",                   # display 1, no audio
+        "1:none",                   # display 1, no audio
         "-vcodec",
         "libx264",
         "-preset",
@@ -131,7 +135,7 @@ def ffmpeg_remux_cmd(temp_path: Path, out_path: Path) -> list[str]:
 
 @dataclass
 class Action:
-    kind: str          # e.g. "left_click", "left_drag", …
+    kind: str          # e.g. "left_click", "key_combo", …
     description: str   # human‑readable detail
     start: float       # seconds since recording origin
     end: float         # seconds since recording origin
@@ -142,6 +146,9 @@ class Action:
 
 class ActionTracker:
     """Aggregates critical user actions and (optionally) screenshots."""
+
+    # definitive ordering for modifier names (guarantees no collisions)
+    _MOD_ORDER = ("ctrl", "command", "option", "shift")
 
     def __init__(
         self,
@@ -162,6 +169,11 @@ class ActionTracker:
         # modifier‑key tracking ----------------------------------------------
         self._command_down = False
         self._ctrl_down = False
+        self._shift_down = False
+        self._option_down = False
+
+        # active “modifier‑hold” block: (frozenset(mods), t_start, ss_idx) ---
+        self._active_mod_block: tuple[frozenset[str], float, int] | None = None
 
         # drag tracking: btn → (x, y, t_press, ss_idx) ------------------------
         self._drag_start: dict[str, tuple[int, int, float, int]] = {}
@@ -187,7 +199,86 @@ class ActionTracker:
         out = self._ss_dir / f"{idx}_{phase}_{ts_ms}.png"
         subprocess.run(["screencapture", "-x", str(out)])  # macOS builtin
 
-    # ─────────── mouse listener ───────────
+    # -----------------------------------------------------------------------
+    #  Modifier helpers
+    # -----------------------------------------------------------------------
+    def _update_modifier_state(
+        self, key: keyboard.Key | keyboard.KeyCode, down: bool
+    ) -> bool:
+        """
+        Set internal modifier flags; return True if `key` *was* a modifier
+        and therefore should NOT be processed as a normal key event.
+        """
+        if key in {keyboard.Key.cmd, keyboard.Key.cmd_r}:
+            self._command_down = down
+            return True
+        if key in {keyboard.Key.ctrl, keyboard.Key.ctrl_r}:
+            self._ctrl_down = down
+            return True
+        if key in {keyboard.Key.shift, keyboard.Key.shift_r}:
+            self._shift_down = down
+            return True
+        if key in {keyboard.Key.alt, keyboard.Key.alt_r}:
+            self._option_down = down
+            return True
+        return False
+
+    def _current_modifiers(self) -> list[str]:
+        mods: list[str] = []
+        if self._ctrl_down:
+            mods.append("ctrl")
+        if self._command_down:
+            mods.append("command")
+        if self._option_down:
+            mods.append("option")
+        if self._shift_down:
+            mods.append("shift")
+        return mods
+
+    # -----------------------------------------------------------------------
+    #  Modifier‑block helpers
+    # -----------------------------------------------------------------------
+    def _sorted_mods(self, mods: frozenset[str]) -> list[str]:
+        """Return a list of modifiers sorted by the canonical order."""
+        return sorted(mods, key=self._MOD_ORDER.index)
+
+    def _maybe_rollover_modifier_block(self, ts: float) -> None:
+        """
+        Close/open a ‘modifier_hold’ block whenever the set of pressed
+        modifiers changes.
+        """
+        current = frozenset(self._current_modifiers())
+
+        # nothing active before, and still nothing → nothing to do
+        if self._active_mod_block is None and not current:
+            return
+
+        # first modifier pressed OR combination changed OR all released
+        if (
+            self._active_mod_block is None
+            or current != self._active_mod_block[0]
+        ):
+            # close previous block (if any) ----------------------------------
+            if self._active_mod_block is not None:
+                prev_mods, t0, idx = self._active_mod_block
+                rel_start = t0 - self.origin
+                rel_end = ts - self.origin
+                desc = "+".join(self._sorted_mods(prev_mods)) + " held"
+                self.actions.append(
+                    Action("modifier_hold", desc, rel_start, rel_end)
+                )
+                self._capture(idx, "end", rel_end)
+                self._active_mod_block = None
+
+            # open new block (if any modifiers still down) -------------------
+            if current:
+                idx = self._next_idx()
+                self._capture(idx, "start", ts - self.origin)
+                self._active_mod_block = (current, ts, idx)
+
+    # -----------------------------------------------------------------------
+    #  Mouse listener
+    # -----------------------------------------------------------------------
     def on_click(
         self, x: int, y: int, button: mouse.Button, pressed: bool
     ) -> None:
@@ -241,26 +332,29 @@ class ActionTracker:
             self.actions.append(Action(kind, desc, rel_start, rel_end))
             self._capture(idx, "end", rel_end)
 
-    # ─────────── keyboard listener ───────────
+    # -----------------------------------------------------------------------
+    #  Keyboard listener
+    # -----------------------------------------------------------------------
     def on_press(self, key: keyboard.Key | keyboard.KeyCode) -> None:
         now = time.time()
 
-        # track modifier states ----------------------------------------------
-        if key in {keyboard.Key.cmd, keyboard.Key.cmd_r}:
-            self._command_down = True
-            return
-        if key in {keyboard.Key.ctrl, keyboard.Key.ctrl_r}:
-            self._ctrl_down = True
-            return
+        # first, deal with modifiers themselves ------------------------------
+        if self._update_modifier_state(key, True):
+            self._maybe_rollover_modifier_block(now)
+            return  # pure modifier press → nothing more to do
 
-        # command+… combo (e.g. ⌘‑C) -----------------------------------------
-        if self._command_down:
-            desc = f"command+{self._key_name(key)}"
+        # Prepare helper values ----------------------------------------------
+        mods = self._current_modifiers()
+        is_combo_context = any(m in mods for m in ("command", "ctrl", "option"))
+
+        # Produce key‑combo action if relevant -------------------------------
+        if is_combo_context:
+            desc = "+".join(mods + [self._key_name(key)])
             self._finalize_typing(now)
             rel_t = now - self.origin
             idx = self._next_idx()
             self._capture(idx, "start", rel_t)
-            self.actions.append(Action("command_combo", desc, rel_t, rel_t))
+            self.actions.append(Action("key_combo", desc, rel_t, rel_t))
             self._capture(idx, "end", rel_t)
             return
 
@@ -284,12 +378,12 @@ class ActionTracker:
         self._last_key_ts = ts
 
     def on_release(self, key: keyboard.Key | keyboard.KeyCode) -> None:
-        if key in {keyboard.Key.cmd, keyboard.Key.cmd_r}:
-            self._command_down = False
-        if key in {keyboard.Key.ctrl, keyboard.Key.ctrl_r}:
-            self._ctrl_down = False
+        if self._update_modifier_state(key, False):
+            self._maybe_rollover_modifier_block(time.time())
 
-    # ─────────── typing flushing ───────────
+    # -----------------------------------------------------------------------
+    #  Typing flushing
+    # -----------------------------------------------------------------------
     def _flush_checker(self) -> None:
         """Background thread: close a typing phrase after TYPING_GAP silence."""
         while not self._stop_check.is_set():
@@ -330,14 +424,22 @@ class ActionTracker:
         """Stop the tracker and flush pending typing."""
         self._stop_check.set()
         self._finalize_typing(time.time())
+        # close still‑open modifier block, if any
+        self._maybe_rollover_modifier_block(time.time())
 
-    # ─────────── utility ───────────
+    # -----------------------------------------------------------------------
+    #  Utility
+    # -----------------------------------------------------------------------
     @staticmethod
     def _key_name(key: keyboard.Key | keyboard.KeyCode) -> str:
-        return key.char if hasattr(key, "char") and key.char else str(key)
+        if hasattr(key, "char") and key.char:
+            return key.char
+        # e.g. 'Key.space' -> 'space'
+        return str(key).split(".")[-1]
 
 
 # ──────────────────────────────────── main ───────────────────────────────────
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(
