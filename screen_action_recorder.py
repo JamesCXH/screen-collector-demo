@@ -8,29 +8,12 @@ log of critical user actions:
 * left_drag   (press–hold–move–release)
 * command+…   key combos (⌘‑C, ⌘‑V, etc.)
 * typing      (collapsed into phrases separated by > TYPING_GAP seconds)
-  * now ALSO begins when **Enter**, **Backspace/Delete**, or any printable
-    character is pressed, and those special keys are represented literally in
-    the recorded phrase ("\n" for Enter, "<BACKSPACE>", "<DELETE>").
 
-Enable `--debug` to snapshot full‑screen PNGs at the *start* **and** *end* of
-every logged action.  Screenshots are stored as
+Enable `--debug` to
+  • snapshot full‑screen PNGs at the *start* **and** *end* of every logged action, **and**
+  • embed a bold, red, top‑right timer (HH:MM:SS.xx) on the video.
 
-    {i}_{phase}_{timestamp‑ms}.png
-       ↑  ↑       ↑ milliseconds since recording began
-       │  └── ('start' | 'end')
-       └──── index of the action (1‑based)
-
-Usage
------
-    python screen_action_recorder.py               # normal session
-    python screen_action_recorder.py --debug       # with screenshots
-    python screen_action_recorder.py -f 30         # 30 fps recording, DEFAULTS TO 30
-
-Dependencies
-------------
-* `brew install ffmpeg`
-* `pip install pynput`
-* macOS‑only: built‑in `screencapture` (grant Screen‑Recording + Input‑Monitoring)
+Tested with **ffmpeg 4.2.2** on macOS.
 """
 from __future__ import annotations
 
@@ -44,6 +27,7 @@ import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from pynput import keyboard, mouse
+
 
 TYPING_GAP = 5.0          # inactivity (s) that ends a typing phrase
 RECORDINGS_ROOT = Path("recordings")
@@ -61,21 +45,66 @@ SPECIAL_TYPING_KEYS: dict[keyboard.Key, str] = {
 
 # ───────────────────────────── ffmpeg helpers ────────────────────────────────
 
-def ffmpeg_record_cmd(temp_path: Path, fps: int = 30) -> list[str]:
-    """Record the main display to MKV (safer than MP4 while writing)."""
-    return [
+
+def ffmpeg_record_cmd(
+    temp_path: Path,
+    fps: int = 30,
+    *,
+    overlay_time: bool = False,
+) -> list[str]:
+    """
+    Build an ffmpeg command that records the main display to `temp_path`.
+    When `overlay_time` is True, a drawtext filter stamps the running
+    timestamp (HH:MM:SS.xx) in **bold red** at the top‑right.
+
+    The function tries a handful of bold system fonts; if none are found
+    it falls back to the generic family name “Helvetica‑Bold”.
+    """
+    cmd: list[str] = [
         "ffmpeg",
         "-hide_banner",
-        "-loglevel", "error",
-        "-y",                          # overwrite silently
-        "-f", "avfoundation",
-        "-framerate", str(fps),
-        "-i", "1:none",                # display 1, no audio
-        "-vcodec", "libx264",
-        "-preset", "ultrafast",
-        "-pix_fmt", "yuv420p",
-        str(temp_path),
+        "-loglevel",
+        "error",
+        "-y",                       # overwrite silently
+        "-f",
+        "avfoundation",
+        "-framerate",
+        str(fps),
+        "-i",
+        "1:none",                   # display 1, no audio
+        "-vcodec",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-pix_fmt",
+        "yuv420p",
     ]
+
+    if overlay_time:
+        # Look for a bold monospaced/system font.
+        bold_fonts = [
+            "/System/Library/Fonts/SFNSMono-Bold.ttf",
+            "/System/Library/Fonts/SFNSText-Bold.otf",
+            "/System/Library/Fonts/SFNSDisplay-Bold.otf",
+            "/System/Library/Fonts/Menlo.ttc",
+        ]
+        font_path = next((p for p in bold_fonts if Path(p).exists()), "")
+
+        drawtext = (
+            "drawtext="
+            f"{('fontfile=' + font_path + ':') if font_path else 'font=Helvetica-Bold:'}"
+            "text='%{pts\\:hms}'"
+            ":fontsize=48"
+            ":fontcolor=red"
+            ":x=w-tw-10"
+            ":y=10"
+            ":box=1"
+            ":boxcolor=black@0.5"
+        )
+        cmd.extend(["-vf", drawtext])
+
+    cmd.append(str(temp_path))
+    return cmd
 
 
 def ffmpeg_remux_cmd(temp_path: Path, out_path: Path) -> list[str]:
@@ -83,16 +112,21 @@ def ffmpeg_remux_cmd(temp_path: Path, out_path: Path) -> list[str]:
     return [
         "ffmpeg",
         "-hide_banner",
-        "-loglevel", "error",
+        "-loglevel",
+        "error",
         "-y",
-        "-i", str(temp_path),
-        "-c", "copy",
-        "-movflags", "+faststart",
+        "-i",
+        str(temp_path),
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
         str(out_path),
     ]
 
 
 # ─────────────────────────────── data models ────────────────────────────────
+
 
 @dataclass
 class Action:
@@ -101,30 +135,37 @@ class Action:
     start: float       # seconds since recording origin
     end: float         # seconds since recording origin
 
+
 # ───────────────────────────── action tracking ──────────────────────────────
+
 
 class ActionTracker:
     """Aggregates critical user actions and (optionally) screenshots."""
 
-    def __init__(self, origin_ts: float, *, debug: bool = False, screenshots_dir: Path | None = None):
+    def __init__(
+        self,
+        origin_ts: float,
+        *,
+        debug: bool = False,
+        screenshots_dir: Path | None = None,
+    ):
         self.origin = origin_ts
         self.actions: list[Action] = []
 
-        # typing state
+        # typing state --------------------------------------------------------
         self._typing_start: float | None = None
         self._last_key_ts: float | None = None
         self._typed_chars: list[str] = []
         self._typing_id: int | None = None
 
-        # modifier‑key tracking
+        # modifier‑key tracking ----------------------------------------------
         self._command_down = False
         self._ctrl_down = False
 
-        # drag tracking: btn → (x, y, t_press, ss_idx)
+        # drag tracking: btn → (x, y, t_press, ss_idx) ------------------------
         self._drag_start: dict[str, tuple[int, int, float, int]] = {}
 
-
-        # misc
+        # misc ----------------------------------------------------------------
         self.debug = debug
         self._ss_dir = screenshots_dir
         self._ss_idx = 1
@@ -146,12 +187,14 @@ class ActionTracker:
         subprocess.run(["screencapture", "-x", str(out)])  # macOS builtin
 
     # ─────────── mouse listener ───────────
-    def on_click(self, x: int, y: int, button: mouse.Button, pressed: bool) -> None:
+    def on_click(
+        self, x: int, y: int, button: mouse.Button, pressed: bool
+    ) -> None:
         now = time.time()
 
-        # ── BUTTON PRESS ───────────────────────────────────────────────────────
+        # BUTTON PRESS --------------------------------------------------------
         if pressed:
-            # Detect what kind of click this *might* become …
+            # Detect what kind of click this might become …
             if button == mouse.Button.left and self._ctrl_down:
                 kind = "ctrl_left_click"
             elif button == mouse.Button.left:
@@ -161,24 +204,26 @@ class ActionTracker:
             else:
                 return
 
-            # ── Allocate an action index *now* and snapshot the screen ─────────
+            # Allocate an action index now & snapshot the screen --------------
             idx = self._next_idx()
             rel_t = now - self.origin
             self._capture(idx, "start", rel_t)
 
-            # Track potential drag (only plain left‑button press)
+            # Track potential drag (only plain left‑button press) -------------
             if button == mouse.Button.left and kind is None:
                 # save idx so we can finish the action on release
                 self._drag_start["left"] = (x, y, now, idx)
                 return
 
-            # Immediate click logging (right‑ or ctrl‑click)
+            # Immediate click logging (right‑ or ctrl‑click) ------------------
             self._finalize_typing(now)
-            self.actions.append(Action(kind, f"{kind} @({x},{y})", rel_t, rel_t))
+            self.actions.append(
+                Action(kind, f"{kind} @({x},{y})", rel_t, rel_t)
+            )
             self._capture(idx, "end", rel_t)
             return
 
-        # ── BUTTON RELEASE ──────────────────────────────────────────────────────
+        # BUTTON RELEASE ------------------------------------------------------
         if button == mouse.Button.left and "left" in self._drag_start:
             sx, sy, t0, idx = self._drag_start.pop("left")
             moved = (sx, sy) != (x, y)
@@ -187,10 +232,11 @@ class ActionTracker:
             self._finalize_typing(now)
             rel_start = t0 - self.origin
             rel_end = now - self.origin
-            if moved:
-                desc = f"{kind} ({sx},{sy}) → ({x},{y})"
-            else:
-                desc = f"{kind} @({x},{y})"
+            desc = (
+                f"{kind} ({sx},{sy}) → ({x},{y})"
+                if moved
+                else f"{kind} @({x},{y})"
+            )
             self.actions.append(Action(kind, desc, rel_start, rel_end))
             self._capture(idx, "end", rel_end)
 
@@ -198,7 +244,7 @@ class ActionTracker:
     def on_press(self, key: keyboard.Key | keyboard.KeyCode) -> None:
         now = time.time()
 
-        # track modifier states
+        # track modifier states ----------------------------------------------
         if key in {keyboard.Key.cmd, keyboard.Key.cmd_r}:
             self._command_down = True
             return
@@ -206,7 +252,7 @@ class ActionTracker:
             self._ctrl_down = True
             return
 
-        # command+… combo (e.g. ⌘‑C)
+        # command+… combo (e.g. ⌘‑C) -----------------------------------------
         if self._command_down:
             desc = f"command+{self._key_name(key)}"
             self._finalize_typing(now)
@@ -217,12 +263,12 @@ class ActionTracker:
             self._capture(idx, "end", rel_t)
             return
 
-        # printable character → typing mode
+        # printable character → typing mode ----------------------------------
         if hasattr(key, "char") and key.char and key.char.isprintable():
             self._begin_or_continue_typing(now, key.char)
             return
 
-        # special non‑printable character that we still want to record
+        # special non‑printable character we still want to record ------------
         if key in SPECIAL_TYPING_KEYS:
             self._begin_or_continue_typing(now, SPECIAL_TYPING_KEYS[key])
             return
@@ -269,8 +315,12 @@ class ActionTracker:
                 )
             )
         if self._typing_id is not None:
-            self._capture(self._typing_id, "end", self._last_key_ts - self.origin)
-        # reset
+            self._capture(
+                self._typing_id,
+                "end",
+                self._last_key_ts - self.origin,
+            )
+        # reset --------------------------------------------------------------
         self._typing_start = self._last_key_ts = None
         self._typed_chars.clear()
         self._typing_id = None
@@ -289,17 +339,33 @@ class ActionTracker:
 # ──────────────────────────────────── main ───────────────────────────────────
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Record screen + critical actions → MP4")
-    ap.add_argument("-f", "--fps", type=int, default=30, help="frames per second")
-    ap.add_argument("--debug", action="store_true", help="capture start/end screenshots for every action")
+    ap = argparse.ArgumentParser(
+        description="Record screen + critical actions → MP4"
+    )
+    ap.add_argument(
+        "-f",
+        "--fps",
+        type=int,
+        default=30,
+        help="frames per second",
+    )
+    ap.add_argument(
+        "--debug",
+        action="store_true",
+        help="capture screenshots and overlay a running timer on the video",
+    )
     args = ap.parse_args()
 
     if not shutil.which("ffmpeg"):
-        sys.exit("ffmpeg not found. Install via Homebrew: brew install ffmpeg")
+        sys.exit(
+            "ffmpeg not found. Install via Homebrew: brew install ffmpeg"
+        )
     if args.debug and not shutil.which("screencapture"):
-        sys.exit("macOS 'screencapture' utility not found (should be pre‑installed)")
+        sys.exit(
+            "macOS 'screencapture' utility not found (should be pre‑installed)"
+        )
 
-    # ── session folder bookkeeping ───────────────────────────────────────────
+    # session folder bookkeeping --------------------------------------------
     RECORDINGS_ROOT.mkdir(exist_ok=True)
     session_idx = 1
     while (RECORDINGS_ROOT / str(session_idx)).exists():
@@ -314,7 +380,7 @@ def main() -> None:
     outfile = session_dir / "recording.mp4"
     temp_mkv = outfile.with_suffix(".capture.mkv")
 
-    # ── start recording ──────────────────────────────────────────────────────
+    # start recording --------------------------------------------------------
     origin = time.time()
     tracker = ActionTracker(
         origin,
@@ -322,7 +388,11 @@ def main() -> None:
         screenshots_dir=screenshots_dir if args.debug else None,
     )
     rec_proc = subprocess.Popen(
-        ffmpeg_record_cmd(temp_mkv, args.fps),
+        ffmpeg_record_cmd(
+            temp_mkv,
+            args.fps,
+            overlay_time=args.debug,
+        ),
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -344,7 +414,7 @@ def main() -> None:
         while not stop_event.is_set():
             time.sleep(0.1)
 
-    # ── stop recording ───────────────────────────────────────────────────────
+    # stop recording ---------------------------------------------------------
     tracker.stop()
     try:
         rec_proc.stdin.write(b"q\n")
@@ -353,19 +423,21 @@ def main() -> None:
         pass
     rec_proc.wait()
 
-    # ── remux to MP4 for broad compatibility ────────────────────────────────
+    # remux to MP4 for broad compatibility -----------------------------------
     print("Finalizing video …")
     subprocess.run(ffmpeg_remux_cmd(temp_mkv, outfile), check=True)
     temp_mkv.unlink(missing_ok=True)
 
-    # ── save action log ──────────────────────────────────────────────────────
+    # save action log --------------------------------------------------------
     json_path = outfile.with_suffix(".json")
     json_path.write_text(json.dumps([asdict(a) for a in tracker.actions], indent=2))
 
-    # ── summary ──────────────────────────────────────────────────────────────
+    # summary ----------------------------------------------------------------
     print("\nHigh‑level actions:")
     for a in tracker.actions:
-        print(f"{a.kind:<15} {a.start:8.2f}s – {a.end:8.2f}s | {a.description}")
+        print(
+            f"{a.kind:<15} {a.start:8.2f}s – {a.end:8.2f}s | {a.description}"
+        )
 
     print(f"\nSaved video        → {outfile}\nSaved action log   → {json_path}")
     if args.debug:
