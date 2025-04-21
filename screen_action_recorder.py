@@ -13,7 +13,7 @@ Enable `--debug` to
   • snapshot full‑screen PNGs at the *start* **and** *end* of every logged action, **and**
   • embed a bold, red, top‑right timer (HH:MM:SS.xx) on the video.
 
-Tested with **ffmpeg 4.2.2** on macOS.
+Tested with **ffmpeg 4.2.2** on macOS.
 """
 from __future__ import annotations
 
@@ -41,6 +41,7 @@ SPECIAL_TYPING_KEYS: dict[keyboard.Key, str] = {
     keyboard.Key.enter: "\n",         # newline
     keyboard.Key.backspace: "<BACKSPACE>",
     keyboard.Key.delete: "<DELETE>",
+    keyboard.Key.tab:       "\t",
 }
 
 # ───────────────────────────── ffmpeg helpers ────────────────────────────────

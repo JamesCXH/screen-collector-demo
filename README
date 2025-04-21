@@ -6,10 +6,11 @@ Critical action + how they're captured
 - ctrl_left_click: hold Ctrl while left‑clicking
 - left_drag: left‑button press, move, release (coords logged)
 - command_combo: any key pressed while ⌘ is held (e.g. ⌘‑C)
-- typing: printable characters + SPECIAL chars (newline, delete, backspace) grouped into a phrase; a phrase closes after 5s of keyboard silence (TYPING_GAP) OR if (start of) critical action is heard
-    - uses .isprintable()
+- typing: printable characters + SPECIAL chars (newline, delete, backspace, tab) grouped into a phrase; a phrase closes after 5s of keyboard silence (TYPING_GAP) OR if (start of) critical action is heard
+    - uses .isprintable() as well as special keys
 
-It's VERY
+Start definition:
+Start is defined as after an event is heard and has affected programs on the screen.
 
 Action entries contain: kind, human‑readable description, start time, end time (seconds since recording began).
 
@@ -18,7 +19,7 @@ Mouse and keyboard events are captured with pynput. Clicks/combos are logged imm
 
 CLI flags
 -f, --fps N video frame‑rate (default 30)
---debug save a full‑screen PNG at the start and end of every action in recordings/<N>/screenshots/
+--debug save a full‑screen PNG at the start and end of every action in recordings/<N>/screenshots/, as well as burn in a timestamp on the video on the top right corner
 
 Output folder per session
 recordings/<N>/recording.mp4 final video
