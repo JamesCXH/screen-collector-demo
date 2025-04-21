@@ -1,24 +1,3 @@
-"""
-screen_action_recorder.py
-─────────────────────────
-Record a macOS screen‑capture video (via ffmpeg) **plus** a timestamped JSON
-log of critical user actions:
-
-* left_click, right_click, **ctrl_left_click**
-* left_drag   (press–hold–move–release)
-* key_combo   (independent tracking of ALL modifier combos, e.g. ⌘‑C,
-  ^⌘‑Space, ⇧⌘‑5, ⌥‑Tab, ^‑C, etc.)
-* typing      (collapsed into phrases separated by > TYPING_GAP seconds)
-* modifier_hold (continuous blocks that cover *exactly* how long each
-  modifier or modifier‑combo is held)
-
-Enable `--debug` to
-  • snapshot full‑screen PNGs at the *start* **and** *end* of every logged
-    action, **and**
-  • embed a bold, red, top‑right timer (HH:MM:SS.xx) on the video.
-
-Tested with **ffmpeg 4.2.2** on macOS.
-"""
 from __future__ import annotations
 
 import argparse
@@ -30,6 +9,8 @@ import threading
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from typing import Tuple
+
 from pynput import keyboard, mouse
 
 
@@ -172,8 +153,8 @@ class ActionTracker:
         self._shift_down = False
         self._option_down = False
 
-        # active “modifier‑hold” block: (frozenset(mods), t_start, ss_idx) ---
-        self._active_mod_block: tuple[frozenset[str], float, int] | None = None
+        # active “modifier‑hold” block: (frozenset(mods), t_start, ss_idx, used)
+        self._active_mod_block: tuple[frozenset[str], float, int, bool] | None = None
 
         # drag tracking: btn → (x, y, t_press, ss_idx) ------------------------
         self._drag_start: dict[str, tuple[int, int, float, int]] = {}
@@ -242,10 +223,17 @@ class ActionTracker:
         """Return a list of modifiers sorted by the canonical order."""
         return sorted(mods, key=self._MOD_ORDER.index)
 
+    def _mark_mod_block_used(self) -> None:
+        """Flag that a non‑modifier key was pressed during the active mod hold."""
+        if self._active_mod_block is not None:
+            mods, t0, idx, _ = self._active_mod_block
+            self._active_mod_block = (mods, t0, idx, True)
+
     def _maybe_rollover_modifier_block(self, ts: float) -> None:
         """
         Close/open a ‘modifier_hold’ block whenever the set of pressed
-        modifiers changes.
+        modifiers changes. A block is only recorded if **some** non‑modifier
+        key was pressed while the modifier(s) were held.
         """
         current = frozenset(self._current_modifiers())
 
@@ -260,21 +248,23 @@ class ActionTracker:
         ):
             # close previous block (if any) ----------------------------------
             if self._active_mod_block is not None:
-                prev_mods, t0, idx = self._active_mod_block
-                rel_start = t0 - self.origin
-                rel_end = ts - self.origin
-                desc = "+".join(self._sorted_mods(prev_mods)) + " held"
-                self.actions.append(
-                    Action("modifier_hold", desc, rel_start, rel_end)
-                )
-                self._capture(idx, "end", rel_end)
+                prev_mods, t0, idx, used = self._active_mod_block
+                if used:  # ← only record if meaningful
+                    rel_start = t0 - self.origin
+                    rel_end = ts - self.origin
+                    desc = "+".join(self._sorted_mods(prev_mods)) + " held"
+                    self.actions.append(
+                        Action("modifier_hold", desc, rel_start, rel_end)
+                    )
+                    self._capture(idx, "end", rel_end)
                 self._active_mod_block = None
 
             # open new block (if any modifiers still down) -------------------
             if current:
                 idx = self._next_idx()
                 self._capture(idx, "start", ts - self.origin)
-                self._active_mod_block = (current, ts, idx)
+                # `used` flag starts as False
+                self._active_mod_block = (current, ts, idx, False)
 
     # -----------------------------------------------------------------------
     #  Mouse listener
@@ -325,9 +315,7 @@ class ActionTracker:
             rel_start = t0 - self.origin
             rel_end = now - self.origin
             desc = (
-                f"{kind} ({sx},{sy}) → ({x},{y})"
-                if moved
-                else f"{kind} @({x},{y})"
+                f"{kind} ({sx},{sy}) → ({x},{y})" if moved else f"{kind} @({x},{y})"
             )
             self.actions.append(Action(kind, desc, rel_start, rel_end))
             self._capture(idx, "end", rel_end)
@@ -342,6 +330,10 @@ class ActionTracker:
         if self._update_modifier_state(key, True):
             self._maybe_rollover_modifier_block(now)
             return  # pure modifier press → nothing more to do
+
+        # At this point we have a NON‑modifier key. If a modifier block is
+        # active, flag it as used so it will be recorded when finished.
+        self._mark_mod_block_used()
 
         # Prepare helper values ----------------------------------------------
         mods = self._current_modifiers()
