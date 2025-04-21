@@ -271,7 +271,7 @@ class ActionTracker:
     def on_click(
         self, x: int, y: int, button: mouse.Button, pressed: bool
     ) -> None:
-        now = time.time()
+        now = time.perf_counter()
 
         # BUTTON PRESS --------------------------------------------------------
         if pressed and button in (mouse.Button.left, mouse.Button.right):
@@ -307,7 +307,7 @@ class ActionTracker:
     #  Keyboard listener
     # -----------------------------------------------------------------------
     def on_press(self, key: keyboard.Key | keyboard.KeyCode) -> None:
-        now = time.time()
+        now = time.perf_counter()
 
         # first, deal with modifiers themselves ------------------------------
         if self._update_modifier_state(key, True):
@@ -354,7 +354,7 @@ class ActionTracker:
 
     def on_release(self, key: keyboard.Key | keyboard.KeyCode) -> None:
         if self._update_modifier_state(key, False):
-            self._maybe_rollover_modifier_block(time.time())
+            self._maybe_rollover_modifier_block(time.perf_counter())
 
     # -----------------------------------------------------------------------
     #  Typing flushing
@@ -366,9 +366,9 @@ class ActionTracker:
             if (
                 self._typing_start is not None
                 and self._last_key_ts is not None
-                and (time.time() - self._last_key_ts) > TYPING_GAP
+                and (time.perf_counter() - self._last_key_ts) > TYPING_GAP
             ):
-                self._finalize_typing(time.time())
+                self._finalize_typing(time.perf_counter())
 
     def _finalize_typing(self, ts: float) -> None:
         """Commit current typing phrase, if any."""
@@ -398,9 +398,9 @@ class ActionTracker:
     def stop(self) -> None:
         """Stop the tracker and flush pending typing."""
         self._stop_check.set()
-        self._finalize_typing(time.time())
+        self._finalize_typing(time.perf_counter())
         # close still‑open modifier block, if any
-        self._maybe_rollover_modifier_block(time.time())
+        self._maybe_rollover_modifier_block(time.perf_counter())
 
     # -----------------------------------------------------------------------
     #  Utility
@@ -459,12 +459,6 @@ def main() -> None:
     temp_mkv = outfile.with_suffix(".capture.mkv")
 
     # start recording --------------------------------------------------------
-    origin = time.time()
-    tracker = ActionTracker(
-        origin,
-        debug=args.debug,
-        screenshots_dir=screenshots_dir if args.debug else None,
-    )
     rec_proc = subprocess.Popen(
         ffmpeg_record_cmd(
             temp_mkv,
@@ -475,6 +469,18 @@ def main() -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+    # ── block until the first frame has been written ────────────────────────
+    while not temp_mkv.exists() or temp_mkv.stat().st_size == 0:
+        time.sleep(0.005)
+
+    origin = time.perf_counter()
+    tracker = ActionTracker(
+        origin,
+        debug=args.debug,
+        screenshots_dir=screenshots_dir if args.debug else None,
+    )
+
     print(f"Recording to {session_dir} …  (Esc to stop)")
 
     stop_event = threading.Event()
@@ -504,6 +510,34 @@ def main() -> None:
     # remux to MP4 for broad compatibility -----------------------------------
     print("Finalizing video …")
     subprocess.run(ffmpeg_remux_cmd(temp_mkv, outfile), check=True)
+
+    # ── obtain PTS of the very first frame ─────────────────────────────────--
+    try:
+        video_t0 = float(
+            subprocess.check_output(
+                [
+                    "ffprobe", "-v", "error",
+                    "-select_streams", "v:0",
+                    "-show_entries", "frame=pkt_pts_time",
+                    "-read_intervals", "%+#1",
+                    "-of", "default=nokey=1:noprint_wrappers=1",
+                    str(temp_mkv),
+                ],
+                text=True,
+            ).strip()
+        )
+    except Exception:
+        print("WARNING! FAILED TO GET FIRST TIMESTEP, TIMESTEPS WILL BE SLIGHTLY OUT OF SYNC")
+        video_t0 = 0.0
+
+    def _snap(t: float, fps: int, offset: float) -> float:
+        """Round *t* to the closest frame boundary (1 / fps)."""
+        return round((t - offset) * fps) / fps
+
+    for a in tracker.actions:
+        a.start = _snap(a.start, args.fps, video_t0)
+        a.end   = _snap(a.end,   args.fps, video_t0)
+
     temp_mkv.unlink(missing_ok=True)
 
     # save action log --------------------------------------------------------

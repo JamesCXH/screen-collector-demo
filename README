@@ -9,8 +9,8 @@ key_combo – non‑modifier key pressed while {command, ctrl or option} is down
 typing – sequence of printable characters plus \n, <BACKSPACE>, <DELETE>, \t; phrase closes after **5s** of silence (tunable). Note that just pressing tab/enter counts as typing whitespace.
 modifier_hold – span during which one or more modifiers are held AND at least one normal key is pressed (logged as "mods held"). Used as held vs just modifier+press behave differently.
 
-Every entry: `{kind, description, start, end}` – times are seconds since recording began. These are recorded on the application level and NOT the HID level (e.g., using Quartz) as a design choice (application level gives more faithful timestamps due to inherent OS delays before visibility on screen).
-Note that it was also a choice to not use a slight offset in the start times to screenshot/log right before any action effects are visible, this can be done trivially.
+Every entry: `{kind, description, start, end}` – times are seconds since recording began. These are recorded on the application level and NOT the HID level.
+We anchor using the presentation timestamp of ffmpeg to ensure entirety of action have the correct timestamps.
 
 Detection internals
 -------------------
