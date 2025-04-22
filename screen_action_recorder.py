@@ -112,13 +112,14 @@ def ffmpeg_remux_cmd(temp_path: Path, out_path: Path) -> list[str]:
 
 # ─────────────────────────────── data models ────────────────────────────────
 
-
 @dataclass
 class Action:
     kind: str          # e.g. "left_click", "key_combo", …
     description: str   # human‑readable detail
     start: float       # seconds since recording origin
     end: float         # seconds since recording origin
+    ss_idx: int        # **NEW** – 1‑based screenshot index
+
 
 
 # ───────────────────────────── action tracking ──────────────────────────────
@@ -254,7 +255,7 @@ class ActionTracker:
                     rel_end = ts - self.origin
                     desc = "+".join(self._sorted_mods(prev_mods)) + " held"
                     self.actions.append(
-                        Action("modifier_hold", desc, rel_start, rel_end)
+                        Action("modifier_hold", desc, rel_start, rel_end, idx)
                     )
                     self._capture(idx, "end", rel_end)
                 self._active_mod_block = None
@@ -301,7 +302,7 @@ class ActionTracker:
             desc = f"{mod_prefix}{kind} ({sx},{sy}) → ({x},{y})"
 
             self._finalize_typing(now)
-            self.actions.append(Action(kind, desc, rel_start, rel_end))
+            self.actions.append(Action(kind, desc, rel_start, rel_end, idx))
             self._capture(idx, "end", rel_end)
 
     # -----------------------------------------------------------------------
@@ -330,7 +331,7 @@ class ActionTracker:
             rel_t = now - self.origin
             idx = self._next_idx()
             self._capture(idx, "start", rel_t)
-            self.actions.append(Action("key_combo", desc, rel_t, rel_t))
+            self.actions.append(Action("key_combo", desc, rel_t, rel_t, idx))
             self._capture(idx, "end", rel_t)
             return
 
@@ -379,19 +380,17 @@ class ActionTracker:
                 return
             phrase = "".join(self._typed_chars)
             if phrase:
+                rel_start = self._typing_start - self.origin
+                rel_end = ts - self.origin
                 self.actions.append(
-                    Action(
-                        "typing",
-                        f"typed: '{phrase}'",
-                        self._typing_start - self.origin,
-                        self._last_key_ts - self.origin,
-                    )
+                  Action("typing", f"typed: '{phrase}'", rel_start, rel_end, self._typing_id)
                 )
+
             if self._typing_id is not None:
                 self._capture(
                     self._typing_id,
                     "end",
-                    self._last_key_ts - self.origin,
+                    ts - self.origin,
                 )
             # reset --------------------------------------------------------------
             self._typing_start = self._last_key_ts = None
@@ -540,6 +539,7 @@ def main() -> None:
     for a in tracker.actions:
         a.start = _snap(a.start, args.fps, video_t0)
         a.end   = _snap(a.end,   args.fps, video_t0)
+    tracker.actions.sort(key=lambda a: a.ss_idx)
 
     temp_mkv.unlink(missing_ok=True)
 
