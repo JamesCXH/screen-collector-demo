@@ -9,6 +9,8 @@ key_combo – non‑modifier key pressed while {command, ctrl or option} is down
 typing – sequence of printable characters plus \n, <BACKSPACE>, <DELETE>, \t; phrase closes after **5s** of silence (tunable). Note that just pressing tab/enter counts as typing whitespace.
 modifier_hold – span during which one or more modifiers are held AND at least one normal key is pressed (logged as "mods held"). Used as held vs just modifier+press behave differently. Note that left/right click aren't classed as a "normal key" for this and won't trigger mod holding.
 
+I AM NOT LOGGING RAW MEDIA PLAY BUTTONS.ETC
+
 Every entry: `{kind, description, start, end}` – the times are then rounded to the nearest 1/‐fps so they line up exactly with the MP4 frames.
 We anchor using the presentation timestamp of ffmpeg to ensure entirety of action have the correct timestamps.
 
