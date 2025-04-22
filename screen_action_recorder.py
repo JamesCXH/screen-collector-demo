@@ -26,6 +26,7 @@ SPECIAL_TYPING_KEYS: dict[keyboard.Key, str] = {
     keyboard.Key.backspace: "<BACKSPACE>",
     keyboard.Key.delete: "<DELETE>",
     keyboard.Key.tab:       "\t",
+    keyboard.Key.space:     " "
 }
 
 # ───────────────────────────── ffmpeg helpers ────────────────────────────────
