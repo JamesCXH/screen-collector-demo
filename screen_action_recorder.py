@@ -163,6 +163,7 @@ class ActionTracker:
         self._ss_dir = screenshots_dir
         self._ss_idx = 1
         self._stop_check = threading.Event()
+        self._typing_lock = threading.Lock()
         threading.Thread(target=self._flush_checker, daemon=True).start()
 
     # ─────────── helpers ───────────
@@ -345,12 +346,13 @@ class ActionTracker:
 
     def _begin_or_continue_typing(self, ts: float, token: str) -> None:
         """Either starts a typing phrase or appends to the current one."""
-        if self._typing_start is None:
-            self._typing_start = ts
-            self._typing_id = self._next_idx()
-            self._capture(self._typing_id, "start", ts - self.origin)
-        self._typed_chars.append(token)
-        self._last_key_ts = ts
+        with self._typing_lock:
+            if self._typing_start is None:
+                self._typing_start = ts
+                self._typing_id = self._next_idx()
+                self._capture(self._typing_id, "start", ts - self.origin)
+            self._typed_chars.append(token)
+            self._last_key_ts = ts
 
     def on_release(self, key: keyboard.Key | keyboard.KeyCode) -> None:
         if self._update_modifier_state(key, False):
@@ -372,28 +374,29 @@ class ActionTracker:
 
     def _finalize_typing(self, ts: float) -> None:
         """Commit current typing phrase, if any."""
-        if self._typing_start is None:
-            return
-        phrase = "".join(self._typed_chars)
-        if phrase:
-            self.actions.append(
-                Action(
-                    "typing",
-                    f"typed: '{phrase}'",
-                    self._typing_start - self.origin,
+        with self._typing_lock:
+            if self._typing_start is None:
+                return
+            phrase = "".join(self._typed_chars)
+            if phrase:
+                self.actions.append(
+                    Action(
+                        "typing",
+                        f"typed: '{phrase}'",
+                        self._typing_start - self.origin,
+                        self._last_key_ts - self.origin,
+                    )
+                )
+            if self._typing_id is not None:
+                self._capture(
+                    self._typing_id,
+                    "end",
                     self._last_key_ts - self.origin,
                 )
-            )
-        if self._typing_id is not None:
-            self._capture(
-                self._typing_id,
-                "end",
-                self._last_key_ts - self.origin,
-            )
-        # reset --------------------------------------------------------------
-        self._typing_start = self._last_key_ts = None
-        self._typed_chars.clear()
-        self._typing_id = None
+            # reset --------------------------------------------------------------
+            self._typing_start = self._last_key_ts = None
+            self._typed_chars.clear()
+            self._typing_id = None
 
     def stop(self) -> None:
         """Stop the tracker and flush pending typing."""
