@@ -118,7 +118,7 @@ class Action:
     description: str   # human‑readable detail
     start: float       # seconds since recording origin
     end: float         # seconds since recording origin
-    ss_idx: int        # **NEW** – 1‑based screenshot index
+    ss_idx: int        # 1‑based screenshot index
 
 
 
@@ -163,6 +163,10 @@ class ActionTracker:
         self.debug = debug
         self._ss_dir = screenshots_dir
         self._ss_idx = 1
+
+        # NEW: queue of (idx, phase, rel_ts) screenshots to extract later -----
+        self._ss_requests: list[tuple[int, str, float]] = []
+
         self._stop_check = threading.Event()
         self._typing_lock = threading.Lock()
         threading.Thread(target=self._flush_checker, daemon=True).start()
@@ -174,12 +178,14 @@ class ActionTracker:
         return i
 
     def _capture(self, idx: int, phase: str, rel_ts: float) -> None:
-        """Capture a screenshot if debug mode is on."""
+        """
+        Queue a screenshot *request* if debug mode is active.
+        Extraction happens after the video is finalised so every PNG
+        is taken from the exact frame whose timestamp we snap below.
+        """
         if not self.debug or self._ss_dir is None:
             return
-        ts_ms = int(rel_ts * 1000)
-        out = self._ss_dir / f"{idx}_{phase}_{ts_ms}.png"
-        subprocess.run(["screencapture", "-x", str(out)])  # macOS builtin
+        self._ss_requests.append((idx, phase, rel_ts))
 
     # -----------------------------------------------------------------------
     #  Modifier helpers
@@ -441,9 +447,9 @@ def main() -> None:
             "ffmpeg not found. Install via Homebrew: brew install ffmpeg"
         )
     if args.debug and not shutil.which("screencapture"):
-        sys.exit(
-            "macOS 'screencapture' utility not found (should be pre‑installed)"
-        )
+        # screencapture is no longer mandatory (we use ffmpeg), but keep the
+        # check so users know it's not used any more.
+        print("NOTE: macOS 'screencapture' is no longer required; continuing …")
 
     # session folder bookkeeping --------------------------------------------
     RECORDINGS_ROOT.mkdir(exist_ok=True)
@@ -540,6 +546,27 @@ def main() -> None:
         a.start = _snap(a.start, args.fps, video_t0)
         a.end   = _snap(a.end,   args.fps, video_t0)
     tracker.actions.sort(key=lambda a: a.ss_idx)
+
+    # ------------------------------------------------------------------
+    # Extract queued screenshots on perfect frame boundaries -----------
+    # ------------------------------------------------------------------
+    if args.debug:
+        screenshots_dir.mkdir(exist_ok=True)
+        for idx, phase, rel_ts in tracker._ss_requests:
+            ts = _snap(rel_ts, args.fps, video_t0)
+            out_png = screenshots_dir / f"{idx}_{phase}_{int(ts * 1000):06d}.png"
+            subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error",
+                    "-y",
+                    "-ss", f"{ts:.03f}",
+                    "-i", str(outfile),
+                    "-frames:v", "1",
+                    "-q:v", "2",
+                    str(out_png),
+                ],
+                check=True,
+            )
 
     temp_mkv.unlink(missing_ok=True)
 
