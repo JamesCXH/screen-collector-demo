@@ -58,6 +58,10 @@ def ffmpeg_record_cmd(
         str(fps),
         "-i",
         "1:none",                   # display 1, no audio
+        "-vf",
+        f"fps={fps}",
+        # "-vsync",
+        # "cfr",
         "-vcodec",
         "libx264",
         "-preset",
@@ -101,6 +105,8 @@ def ffmpeg_remux_cmd(temp_path: Path, out_path: Path) -> list[str]:
         "-loglevel",
         "error",
         "-y",
+        "-copytb",
+        "1",
         "-i",
         str(temp_path),
         "-c",
@@ -109,6 +115,39 @@ def ffmpeg_remux_cmd(temp_path: Path, out_path: Path) -> list[str]:
         "+faststart",
         str(out_path),
     ]
+
+def ffmpeg_encode_cmd(
+    temp_path: Path,
+    out_path: Path,
+    *,
+    fps: int = 30,
+    crf: int = 20,
+    preset: str = "veryfast",
+) -> list[str]:
+    """
+    Re‑encode the capture so every frame has monotonic timestamps and a
+    constant frame‑rate stream that plays reliably in all browsers.
+    """
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-fflags", "+genpts",       # rebuild presentation timestamps
+        "-i", str(temp_path),
+
+        # ── video ───────────────────────────────────────────────────────────
+        "-c:v", "libx264",
+        "-preset", preset,
+        "-crf", str(crf),
+        "-pix_fmt", "yuv420p",
+        "-r", str(fps),             # force constant FPS
+
+        # ── fast‑start ──────────────────────────────────────────────────────
+        "-movflags", "+faststart",
+        str(out_path),
+    ]
+
 
 
 # ─────────────────────────────── data models ────────────────────────────────
@@ -512,13 +551,18 @@ def main() -> None:
     try:
         rec_proc.stdin.write(b"q\n")
         rec_proc.stdin.flush()
+        rec_proc.wait(timeout=3)
     except Exception:
-        pass
-    rec_proc.wait()
+        rec_proc.terminate()
+        rec_proc.wait()
 
     # remux to MP4 for broad compatibility -----------------------------------
     print("Finalizing video …")
-    subprocess.run(ffmpeg_remux_cmd(temp_mkv, outfile), check=True)
+    # subprocess.run(ffmpeg_remux_cmd(temp_mkv, outfile), check=True)
+    subprocess.run(
+        ffmpeg_encode_cmd(temp_mkv, outfile, fps=args.fps),
+        check=True,
+    )
 
     # ── obtain PTS of the very first frame ─────────────────────────────────--
     try:
