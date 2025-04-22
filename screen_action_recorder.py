@@ -595,16 +595,48 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Extract queued screenshots on perfect frame boundaries -----------
     # ------------------------------------------------------------------
+    # if args.debug:
+    #     screenshots_dir.mkdir(exist_ok=True)
+    #     for idx, phase, rel_ts in tracker._ss_requests:
+    #         ts = _snap(rel_ts, args.fps, video_t0)
+    #         out_png = screenshots_dir / f"{idx}_{phase}_{int(ts * 1000):06d}.png"
+    #         subprocess.run(
+    #             [
+    #                 "ffmpeg", "-hide_banner", "-loglevel", "error",
+    #                 "-y",
+    #                 "-ss", f"{ts:.03f}",
+    #                 "-i", str(outfile),
+    #                 "-frames:v", "1",
+    #                 "-q:v", "2",
+    #                 str(out_png),
+    #             ],
+    #             check=True,
+    #         )
+    # ------------------------------------------------------------------
+    # Extract queued screenshots
+    #   • “start”  → snap to the exact frame boundary  (frame‑accurate)
+    #   • “end”    → leave at the exact wall‑clock timestamp (natural)
+    # ------------------------------------------------------------------
     if args.debug:
         screenshots_dir.mkdir(exist_ok=True)
+
         for idx, phase, rel_ts in tracker._ss_requests:
-            ts = _snap(rel_ts, args.fps, video_t0)
+            # `rel_ts` is seconds since we started tracking.
+            # Video PTSs begin at `video_t0`, so subtract it first.
+            raw_ts = max(rel_ts - video_t0, 0.0)
+
+            if phase == "start":
+                ts = _snap(rel_ts, args.fps, video_t0)  # frame‑accurate
+            else:  # phase == "end"
+                ts = raw_ts  # natural timestamp
+
             out_png = screenshots_dir / f"{idx}_{phase}_{int(ts * 1000):06d}.png"
+
             subprocess.run(
                 [
                     "ffmpeg", "-hide_banner", "-loglevel", "error",
                     "-y",
-                    "-ss", f"{ts:.03f}",
+                    "-ss", f"{ts:.03f}",  # ← new timestamp logic
                     "-i", str(outfile),
                     "-frames:v", "1",
                     "-q:v", "2",
